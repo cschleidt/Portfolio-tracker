@@ -1,0 +1,27 @@
+# .NET
+*.user
+*.suo
+.vs/
+bin/
+obj/
+*.userprefs
+appsettings.Production.json
+
+# Node
+node_modules/
+.next/
+.env
+.env.local
+.env*.local
+npm-debug.log*
+yarn-debug.log*
+
+# General
+.DS_Store
+Thumbs.db
+*.log
+
+# Database
+*.db
+*.db-shm
+*.db-wal
