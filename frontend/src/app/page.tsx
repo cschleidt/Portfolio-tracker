@@ -2,7 +2,7 @@ import { api } from "@/lib/api";
 import { InvestorCard } from "@/components/InvestorCard";
 import { ChangesFeed } from "@/components/ChangesFeed";
 
-export const revalidate = 60;
+export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
   const [investors, changes] = await Promise.all([

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { INVESTORS } from "../route";
+import { INVESTORS } from "../_data";
 
 export async function GET(_req: Request, { params }: { params: { id: string } }) {
   const investor = INVESTORS.find((i) => i.id === params.id);

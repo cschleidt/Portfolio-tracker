@@ -1,60 +1,7 @@
 import { NextResponse } from "next/server";
-
-const INVESTORS = [
-  {
-    id: "11111111-0000-0000-0000-000000000001",
-    name: "Lars Tvede",
-    description: "Serieiværksætter, bestsellerforfatter og global makroinvestor med fokus på tech og emerging markets.",
-    imageUrl: null,
-    totalPortfolioValue: 1342500,
-    performancePercent: 34.25,
-    lastSyncedAt: new Date().toISOString(),
-    holdingsCount: 4,
-  },
-  {
-    id: "11111111-0000-0000-0000-000000000002",
-    name: "Jacob Kirkegaard",
-    description: "Økonom og investeringsekspert hos Peterson Institute med speciale i europæiske markeder.",
-    imageUrl: null,
-    totalPortfolioValue: 987600,
-    performancePercent: -1.24,
-    lastSyncedAt: new Date().toISOString(),
-    holdingsCount: 4,
-  },
-  {
-    id: "11111111-0000-0000-0000-000000000003",
-    name: "Anne Buchardt",
-    description: "Porteføljeforvalter med fokus på bæredygtige og grønne investeringer.",
-    imageUrl: null,
-    totalPortfolioValue: 875000,
-    performancePercent: -8.75,
-    lastSyncedAt: new Date().toISOString(),
-    holdingsCount: 4,
-  },
-  {
-    id: "11111111-0000-0000-0000-000000000004",
-    name: "Peter Nielsen",
-    description: "Teknologiinvestor, iværksætter og angel investor med fokus på nordiske tech-selskaber.",
-    imageUrl: null,
-    totalPortfolioValue: 1128000,
-    performancePercent: 12.80,
-    lastSyncedAt: new Date().toISOString(),
-    holdingsCount: 4,
-  },
-  {
-    id: "11111111-0000-0000-0000-000000000005",
-    name: "Mads Christiansen",
-    description: "Professionel trader og teknisk analytiker med speciale i nordiske blue-chip aktier.",
-    imageUrl: null,
-    totalPortfolioValue: 1065000,
-    performancePercent: 6.50,
-    lastSyncedAt: new Date().toISOString(),
-    holdingsCount: 4,
-  },
-];
+import { INVESTORS } from "./_data";
 
 export async function GET() {
   return NextResponse.json(INVESTORS);
 }
 
-export { INVESTORS };

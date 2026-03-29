@@ -1,6 +1,4 @@
 import { NextResponse } from "next/server";
-import { INVESTORS } from "../../route";
-
 const PORTFOLIOS: Record<string, object> = {
   "11111111-0000-0000-0000-000000000001": {
     id: "22222222-0000-0000-0000-000000000001",
