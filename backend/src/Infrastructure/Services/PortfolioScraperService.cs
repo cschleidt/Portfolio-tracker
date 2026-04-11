@@ -1,5 +1,8 @@
+using System.Globalization;
+using System.Text.RegularExpressions;
 using HtmlAgilityPack;
 using Microsoft.Extensions.Logging;
+using Microsoft.Playwright;
 using PortfolioTracker.Application.DTOs;
 using PortfolioTracker.Application.Interfaces;
 
@@ -7,18 +10,16 @@ namespace PortfolioTracker.Infrastructure.Services;
 
 /// <summary>
 /// Scrapes investor portfolios from Saxo Bank's Millionaerklubben campaign page.
-/// The page is a JavaScript SPA - if scraping fails (403/no data), falls back to mock data for development.
-/// For production, consider using a headless browser (Playwright) or an authenticated API session.
+/// The page is a JavaScript SPA — Playwright is required to fully render it before parsing.
+/// Investors: Lars Persson, Lau Svenssen, Michael Friis Jørgensen (in page order).
 /// </summary>
-public class PortfolioScraperService : IPortfolioScraperService
+public partial class PortfolioScraperService : IPortfolioScraperService
 {
-    private readonly HttpClient _httpClient;
     private readonly ILogger<PortfolioScraperService> _logger;
-    private const string BaseUrl = "https://www.home.saxo/da-dk/campaigns/millionaerklubben";
+    private const string PageUrl = "https://www.home.saxo/da-dk/campaigns/millionaerklubben";
 
-    public PortfolioScraperService(HttpClient httpClient, ILogger<PortfolioScraperService> logger)
+    public PortfolioScraperService(ILogger<PortfolioScraperService> logger)
     {
-        _httpClient = httpClient;
         _logger = logger;
     }
 
@@ -26,26 +27,37 @@ public class PortfolioScraperService : IPortfolioScraperService
     {
         try
         {
-            var response = await _httpClient.GetStringAsync(BaseUrl, cancellationToken);
+            var html = await FetchRenderedHtmlAsync();
             var doc = new HtmlDocument();
-            doc.LoadHtml(response);
+            doc.LoadHtml(html);
 
-            // Saxo renders this as a SPA - try common CSS class patterns
-            var investorNodes = doc.DocumentNode.SelectNodes(
-                "//div[contains(@class,'investor') or contains(@class,'participant') or contains(@class,'member')]");
+            // Investor names are h2.highlight that are direct children of div.content
+            // (narrows out other h2.highlight headings on the page)
+            var nameNodes = doc.DocumentNode.SelectNodes("//div[@class='content']/h2[@class='highlight']");
+            var clubNodes = doc.DocumentNode.SelectNodes("//div[@data-qa='millionaires-club']");
 
-            if (investorNodes is null || !investorNodes.Any())
+            if (nameNodes is null || clubNodes is null || nameNodes.Count == 0)
             {
-                _logger.LogWarning("No investor nodes found on Saxo page - JS rendering required. Using mock data.");
+                _logger.LogWarning("Could not find investor name nodes on Saxo page. Using mock data.");
                 return GetMockInvestors();
             }
 
-            return investorNodes.Select((node, i) => new ScrapedInvestorDto(
-                ExternalId: $"investor-{i}",
-                Name: node.SelectSingleNode(".//h3 | .//h2 | .//h4")?.InnerText.Trim() ?? $"Investor {i}",
-                Description: node.SelectSingleNode(".//p")?.InnerText.Trim() ?? string.Empty,
-                ImageUrl: node.SelectSingleNode(".//img")?.GetAttributeValue("src", null)
-            ));
+            var investors = new List<ScrapedInvestorDto>();
+            for (int i = 0; i < nameNodes.Count; i++)
+            {
+                var name = nameNodes[i].InnerText.Trim();
+                if (string.IsNullOrEmpty(name)) continue;
+                investors.Add(new ScrapedInvestorDto(Slugify(name), name, string.Empty, null));
+            }
+
+            if (investors.Count == 0)
+            {
+                _logger.LogWarning("No investors parsed from Saxo page. Using mock data.");
+                return GetMockInvestors();
+            }
+
+            _logger.LogInformation("Scraped {Count} investors from Saxo page.", investors.Count);
+            return investors;
         }
         catch (Exception ex)
         {
@@ -58,105 +70,199 @@ public class PortfolioScraperService : IPortfolioScraperService
     {
         try
         {
-            var url = $"{BaseUrl}/{investorExternalId}";
-            var response = await _httpClient.GetStringAsync(url, cancellationToken);
+            var html = await FetchRenderedHtmlAsync();
             var doc = new HtmlDocument();
-            doc.LoadHtml(response);
+            doc.LoadHtml(html);
 
-            var holdingNodes = doc.DocumentNode.SelectNodes(
-                "//tr[contains(@class,'holding') or contains(@class,'position') or contains(@class,'instrument')]");
+            var nameNodes = doc.DocumentNode.SelectNodes("//div[@class='content']/h2[@class='highlight']");
+            var clubNodes = doc.DocumentNode.SelectNodes("//div[@data-qa='millionaires-club']");
 
-            if (holdingNodes is null || !holdingNodes.Any())
+            if (nameNodes is null || clubNodes is null || nameNodes.Count != clubNodes.Count)
             {
-                _logger.LogWarning("No holdings found for {InvestorId}. Using mock data.", investorExternalId);
+                _logger.LogWarning("Unexpected page structure for investor {Id}. Using mock data.", investorExternalId);
                 return GetMockPortfolio(investorExternalId);
             }
 
-            var holdings = holdingNodes
-                .Select(node =>
+            // Match investor by slugified name
+            int investorIndex = -1;
+            for (int i = 0; i < nameNodes.Count; i++)
+            {
+                if (Slugify(nameNodes[i].InnerText.Trim()) == investorExternalId)
                 {
-                    var cells = node.SelectNodes(".//td");
-                    if (cells is null || cells.Count < 5) return null;
-                    return new ScrapedHoldingDto(
-                        Ticker: cells[0].InnerText.Trim(),
-                        CompanyName: cells[1].InnerText.Trim(),
-                        Quantity: decimal.TryParse(cells[2].InnerText.Trim().Replace(".", "").Replace(",", "."), out var qty) ? qty : 0,
-                        EntryPrice: decimal.TryParse(cells[3].InnerText.Trim().Replace(".", "").Replace(",", "."), out var entry) ? entry : 0,
-                        CurrentPrice: decimal.TryParse(cells[4].InnerText.Trim().Replace(".", "").Replace(",", "."), out var curr) ? curr : 0,
-                        Currency: "DKK"
-                    );
-                })
-                .Where(h => h is not null && !string.IsNullOrEmpty(h.Ticker))
-                .Cast<ScrapedHoldingDto>();
+                    investorIndex = i;
+                    break;
+                }
+            }
 
-            return new ScrapedPortfolioDto(investorExternalId, 0, 0, holdings);
+            if (investorIndex < 0)
+            {
+                _logger.LogWarning("Investor {Id} not found on Saxo page. Using mock data.", investorExternalId);
+                return GetMockPortfolio(investorExternalId);
+            }
+
+            var clubNode = clubNodes[investorIndex];
+            var holdings = ParseHoldings(clubNode, investorExternalId);
+            var performance = ParseYearPerformance(clubNode);
+            var totalValue = holdings.Sum(h => h.Quantity * h.CurrentPrice);
+
+            _logger.LogInformation("Scraped {Count} holdings for {Id}.", holdings.Count, investorExternalId);
+            return new ScrapedPortfolioDto(investorExternalId, totalValue, performance, holdings);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to scrape portfolio for {InvestorId}. Returning mock data.", investorExternalId);
+            _logger.LogError(ex, "Failed to scrape portfolio for {Id}. Returning mock data.", investorExternalId);
             return GetMockPortfolio(investorExternalId);
         }
     }
 
+    private static async Task<string> FetchRenderedHtmlAsync()
+    {
+        using var playwright = await Playwright.CreateAsync();
+        await using var browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions { Headless = true });
+        var page = await browser.NewPageAsync();
+        await page.GotoAsync(PageUrl, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
+        await page.WaitForSelectorAsync("[data-qa='millionaires-club']",
+            new PageWaitForSelectorOptions { Timeout = 15000 });
+        return await page.ContentAsync();
+    }
+
+    private List<ScrapedHoldingDto> ParseHoldings(HtmlNode clubNode, string investorId)
+    {
+        // The page renders two table variants; v2-show-sm contains a standard <table>
+        var rows = clubNode.SelectNodes(".//div[contains(@class,'v2-show-sm')]//tbody/tr");
+
+        if (rows is null || rows.Count == 0)
+        {
+            _logger.LogWarning("No holdings rows found for {Id}.", investorId);
+            return [];
+        }
+
+        var holdings = new List<ScrapedHoldingDto>();
+        foreach (var row in rows)
+        {
+            var cells = row.SelectNodes(".//td");
+            if (cells is null || cells.Count < 3) continue;
+
+            var companyName = row.SelectSingleNode(".//div[@class='instrument__description-name']")?.InnerText.Trim() ?? string.Empty;
+            var tickerRaw = row.SelectSingleNode(".//span[@class='name']")?.InnerText.Trim() ?? string.Empty;
+            // Format is "SYMBOL:exchange" — keep only the symbol part
+            var ticker = tickerRaw.Contains(':') ? tickerRaw.Split(':')[0] : tickerRaw;
+
+            // Currency is the 2nd <span> inside instrument__description-exchange
+            // Structure: span.name | sup | span(currency) | span.v2-flag
+            var exchangeDiv = row.SelectSingleNode(".//div[@class='instrument__description-exchange']");
+            var currency = exchangeDiv?.SelectSingleNode("./span[2]")?.InnerText.Trim() ?? "DKK";
+
+            // Danish number format: period = thousands separator, comma = decimal
+            var qtyText = cells[1].InnerText.Trim().Replace(".", "").Replace(",", ".");
+            var priceText = cells[2].InnerText.Trim().Replace(".", "").Replace(",", ".");
+
+            if (!decimal.TryParse(qtyText, NumberStyles.Any, CultureInfo.InvariantCulture, out var qty)) continue;
+            if (!decimal.TryParse(priceText, NumberStyles.Any, CultureInfo.InvariantCulture, out var price)) continue;
+            if (string.IsNullOrEmpty(ticker)) continue;
+
+            // Opening price is used for both entry and current (page shows static opening prices)
+            holdings.Add(new ScrapedHoldingDto(ticker, companyName, qty, price, price, currency));
+        }
+
+        return holdings;
+    }
+
+    private static decimal ParseYearPerformance(HtmlNode clubNode)
+    {
+        var cols = clubNode.SelectNodes(".//div[contains(@class,'portfolio-col--padding')]");
+        if (cols is null) return 0;
+
+        foreach (var col in cols)
+        {
+            var label = col.SelectSingleNode(".//p")?.InnerText.Trim() ?? string.Empty;
+            // "Afkast i år" — year-to-date performance
+            if (!label.Contains("år", StringComparison.OrdinalIgnoreCase)) continue;
+
+            var valueText = col.SelectSingleNode(".//h4")?.InnerText.Trim()
+                .Replace("%", "").Replace(",", ".").Trim();
+            if (decimal.TryParse(valueText, NumberStyles.Any, CultureInfo.InvariantCulture, out var perf))
+                return perf;
+        }
+
+        return 0;
+    }
+
+    [GeneratedRegex(@"[^a-z0-9]+")]
+    private static partial Regex SlugifyRegex();
+
+    // Slugifies a display name to a stable URL-safe external ID
+    // e.g. "Michael Friis Jørgensen" → "michael-friis-jorgensen"
+    private static string Slugify(string name) =>
+        SlugifyRegex().Replace(
+            name.ToLowerInvariant()
+                .Replace("ø", "o").Replace("æ", "ae").Replace("å", "a")
+                .Replace("ö", "o").Replace("ä", "a").Replace("ü", "u"),
+            "-")
+            .Trim('-');
+
     private static IEnumerable<ScrapedInvestorDto> GetMockInvestors() =>
     [
-        new("lars-tvede", "Lars Tvede", "Serieiværksætter, bestsellerforfatter og global makroinvestor", null),
-        new("jacob-kirkegaard", "Jacob Kirkegaard", "Økonom og investeringsekspert hos Peterson Institute", null),
-        new("anne-buchardt", "Anne Buchardt", "Porteføljeforvalter med fokus på bæredygtige investeringer", null),
-        new("peter-nielsen", "Peter Nielsen", "Teknologiinvestor, iværksætter og angel investor", null),
-        new("mads-christiansen", "Mads Christiansen", "Professionel trader og teknisk analytiker", null),
+        new("lars-persson", "Lars Persson", string.Empty, null),
+        new("lau-svenssen", "Lau Svenssen", string.Empty, null),
+        new("michael-friis-jorgensen", "Michael Friis Jørgensen", string.Empty, null),
     ];
 
     private static ScrapedPortfolioDto GetMockPortfolio(string externalId)
     {
         var holdingsByInvestor = new Dictionary<string, ScrapedHoldingDto[]>
         {
-            ["lars-tvede"] =
+            ["lars-persson"] =
             [
-                new("NOVO B", "Novo Nordisk B", 500, 650m, 780m, "DKK"),
-                new("AAPL", "Apple Inc.", 200, 150m, 175m, "USD"),
-                new("MSFT", "Microsoft Corp.", 150, 300m, 420m, "USD"),
-                new("NVDA", "NVIDIA Corp.", 100, 450m, 890m, "USD"),
+                new("TYRES", "Nokian Renkaat Oyj", 348, 10.22m, 10.22m, "EUR"),
+                new("BAVA", "Bavarian Nordic A/S", 75, 148.9m, 148.9m, "DKK"),
+                new("VWS", "Vestas Wind Systems A/S", 141, 112.1m, 112.1m, "DKK"),
+                new("TRMD_A", "TORM PLC A", 170, 128.9m, 128.9m, "DKK"),
+                new("AMBUb", "Ambu A/S", 286, 83.8m, 83.8m, "DKK"),
+                new("OKEA", "Okea ASA", 1355, 22.52m, 22.52m, "NOK"),
+                new("VISC", "Gruvaktiebolaget Viscaria", 1000, 18.73m, 18.73m, "SEK"),
+                new("SWED_A", "Swedbank AB ser A", 120, 341.03m, 341.03m, "SEK"),
+                new("VOLVb", "Volvo AB Ser. B", 90, 333.28m, 333.28m, "SEK"),
+                new("TEF", "Telefonica SA", 386, 3.7m, 3.7m, "EUR"),
+                new("INTRUM", "Intrum AB", 438, 40.46m, 40.46m, "SEK"),
+                new("VAR", "Var Energi ASA", 378, 39.44m, 39.44m, "NOK"),
             ],
-            ["jacob-kirkegaard"] =
+            ["lau-svenssen"] =
             [
-                new("ORSTED", "Ørsted A/S", 300, 500m, 380m, "DKK"),
-                new("DSV", "DSV A/S", 100, 1200m, 1450m, "DKK"),
-                new("MAERSK B", "A.P. Møller-Mærsk B", 10, 12000m, 13500m, "DKK"),
-                new("GS", "Goldman Sachs", 50, 350m, 490m, "USD"),
+                new("DNORD", "D/S Norden", 235, 318.54m, 318.54m, "DKK"),
+                new("PHO", "Photocure ASA", 1000, 58.83m, 58.83m, "NOK"),
+                new("TEN_NEW", "Tsakos Energy Navigation", 150, 15.44m, 15.44m, "USD"),
+                new("TRMD_A", "TORM PLC A", 170, 132m, 132m, "DKK"),
+                new("FRO", "Frontline Plc", 250, 228.7m, 228.7m, "NOK"),
+                new("BWLPG", "BW LPG Ltd.", 300, 127.3m, 127.3m, "NOK"),
+                new("ZEAL", "Zealand Pharma A/S", 90, 409.5m, 409.5m, "DKK"),
+                new("GN", "GN Store Nord A/S", 350, 98.34m, 98.34m, "DKK"),
             ],
-            ["anne-buchardt"] =
+            ["michael-friis-jorgensen"] =
             [
-                new("VESTAS", "Vestas Wind Systems", 400, 180m, 165m, "DKK"),
-                new("NESTE", "Neste Oyj", 300, 40m, 35m, "EUR"),
-                new("TSLA", "Tesla Inc.", 100, 200m, 175m, "USD"),
-                new("AMZN", "Amazon.com Inc.", 80, 140m, 195m, "USD"),
-            ],
-            ["peter-nielsen"] =
-            [
-                new("GOOGL", "Alphabet Inc.", 150, 130m, 175m, "USD"),
-                new("META", "Meta Platforms Inc.", 200, 300m, 525m, "USD"),
-                new("NETCOMPANY", "Netcompany Group", 500, 300m, 380m, "DKK"),
-                new("AMBU B", "Ambu B", 1000, 150m, 185m, "DKK"),
-            ],
-            ["mads-christiansen"] =
-            [
-                new("CARL B", "Carlsberg B", 200, 900m, 980m, "DKK"),
-                new("COLO B", "Coloplast B", 100, 850m, 940m, "DKK"),
-                new("JYSK", "Jyske Bank", 300, 450m, 520m, "DKK"),
-                new("JPM", "JPMorgan Chase", 100, 155m, 215m, "USD"),
+                new("BABA", "Alibaba ADR", 12, 87.4m, 87.4m, "USD"),
+                new("NKT", "NKT A/S", 20, 452.2m, 452.2m, "DKK"),
+                new("SOLARb", "Solar B A/S", 25, 265.5m, 265.5m, "DKK"),
+                new("XLFS", "Invesco Financials ETF", 3, 353.28m, 353.28m, "EUR"),
+                new("DSV", "DSV A/S", 12, 1336m, 1336m, "DKK"),
+                new("NTG", "NTG Nordic Transport Group", 112, 172.4m, 172.4m, "DKK"),
+                new("BAVA", "Bavarian Nordic A/S", 50, 173.35m, 173.35m, "DKK"),
+                new("PATH", "UiPath Inc.", 218, 14.64m, 14.64m, "USD"),
+                new("LOCK", "iShares Digital Security ETF", 156, 8.57m, 8.57m, "EUR"),
+                new("NVO", "Novo Nordisk ADR", 100, 46.47m, 46.47m, "USD"),
+                new("COLOb", "Coloplast B A/S", 35, 543.4m, 543.4m, "DKK"),
+                new("GN", "GN Store Nord A/S", 240, 103.73m, 103.73m, "DKK"),
+                new("NNIT", "NNIT A/S", 220, 48.35m, 48.35m, "DKK"),
+                new("NOW", "ServiceNow Inc.", 30, 118.22m, 118.22m, "USD"),
             ],
         };
 
         var holdings = holdingsByInvestor.TryGetValue(externalId, out var h) ? h :
         [
-            new ScrapedHoldingDto("NOVO B", "Novo Nordisk B", 100, 700m, 780m, "DKK"),
-            new ScrapedHoldingDto("AAPL", "Apple Inc.", 50, 170m, 175m, "USD"),
+            new ScrapedHoldingDto("VWS", "Vestas Wind Systems A/S", 100, 112.1m, 112.1m, "DKK"),
         ];
 
         var totalValue = holdings.Sum(h => h.Quantity * h.CurrentPrice);
-        var performance = (decimal)(new Random(externalId.GetHashCode()).NextDouble() * 30 - 5);
-
-        return new ScrapedPortfolioDto(externalId, totalValue, Math.Round(performance, 2), holdings);
+        return new ScrapedPortfolioDto(externalId, totalValue, 0, holdings);
     }
 }

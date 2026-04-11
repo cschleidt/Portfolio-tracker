@@ -4,7 +4,13 @@
       "Bash(docker compose:*)",
       "Bash(curl -s http://localhost:5000/api/Investors)",
       "Bash(dotnet ef:*)",
-      "Bash(dotnet tool:*)"
+      "Bash(dotnet tool:*)",
+      "WebFetch(domain:www.saxoinvestor.dk)",
+      "WebFetch(domain:www.home.saxo)",
+      "WebFetch(domain:gateway.saxobank.com)",
+      "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0.0.0 Safari/537.36\" \"https://www.home.saxo/da-dk/campaigns/millionaerklubben\")",
+      "Bash(curl -s -A \"Mozilla/5.0 \\(Windows NT 10.0; Win64; x64\\) AppleWebKit/537.36 \\(KHTML, like Gecko\\) Chrome/120.0.0.0 Safari/537.36\" \"https://www.home.saxo/da-dk/campaigns/millionaerklubben\" -o /tmp/millionaer.html)",
+      "Read(//tmp/**)"
     ]
   }
 }
